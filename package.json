@@ -1,0 +1,19 @@
+{
+  "name": "production-faulty-session-automation-script-db-version",
+  "version": "1.0.0",
+  "description": "",
+  "main": "Production-faulty-session.js",
+  "type": "module",
+  "scripts": {
+    "start": "node Production-faulty-session.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.13.6",
+    "mongodb": "^7.1.0",
+    "nodemailer": "^8.0.1",
+    "xlsx": "^0.18.5"
+  }
+}

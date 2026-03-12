@@ -100,29 +100,58 @@ const transporter = nodemailer.createTransport({
 // =====================================================
 function buildMailText({ type, partyId, batch, count }) {
 
-    let actionLine = "";
+    if (type === "Notification") {
+        return `Hello,
 
-    if (type === "Notification")
-        actionLine =
-            "New faulty charging sessions detected.";
+We have not received the Charge Detail Record (CDR) for the session(s) listed in the attached file. These sessions appear to be in a faulty state and the corresponding CDRs have not yet been received from your end.
 
-    if (type === "Reminder1")
-        actionLine =
-            "Reminder: sessions still unresolved.";
+Kindly review the sessions, close them if required, and push the corresponding CDRs from your system.
 
-    if (type === "FinalReminder")
-        actionLine =
-            "Final reminder for pending faulty sessions.";
+Session Details:
+Please refer to the attached Excel file for the list of affected sessions.
 
-    return `
-Partner : ${partyId}
-Batch   : ${batch}
-Count   : ${count}
+This will help ensure that the sessions are accurately reflected in billing and reporting.
 
-${actionLine}
+Regards,
+Chargezone`;
+    }
 
-Chargezone EMSP Monitoring
-`;
+    if (type === "Reminder1") {
+        return `Hello,
+
+This is a reminder regarding the faulty session(s) for which the Charge Detail Record (CDR) is still pending.
+
+Our records indicate that the CDRs for the session(s) listed in the attached file have not yet been received.
+
+Kindly review the sessions, close them if required, and push the corresponding CDRs from your system at the earliest.
+
+Session Details:
+Please refer to the attached Excel file for the list of affected sessions.
+
+Submitting the CDRs will help ensure that the sessions are accurately reflected in billing and reporting.
+
+Regards,
+Chargezone`;
+    }
+
+    if (type === "FinalReminder") {
+        return `Hello,
+
+This is a final reminder regarding the faulty session(s) for which the Charge Detail Record (CDR) is still pending.
+
+Despite previous notifications, the CDRs for the session(s) listed in the attached file have not yet been received.
+
+We request you to kindly review the sessions, close them if required, and push the corresponding CDRs from your system as soon as possible.
+
+Session Details:
+Please refer to the attached Excel file for the list of affected sessions.
+
+Prompt action will help ensure that the sessions are accurately reflected in billing and reporting.
+
+Regards,
+Chargezone`;
+    }
+
 }
 
 // =====================================================
@@ -337,31 +366,22 @@ function isFaulty(doc, partyId) {
 // =====================================================
 async function reconcileAndProcess() {
 
-    const REMINDER_DELAY =
-        24 * 60 * 60 * 1000;
+    const REMINDER_DELAY = 24 * 60 * 60 * 1000;
+    const FINAL_DELAY = 24 * 60 * 60 * 1000;
+    const now = new Date();
 
-    const FINAL_DELAY =
-        24 * 60 * 60 * 1000;
+    const workbook = XLSX.readFile(excelPath);
 
-    const TIME_BUFFER = 60000;
-
-    const workbook =
-        XLSX.readFile(excelPath);
-
-    const jsonData =
-        XLSX.utils.sheet_to_json(
-            workbook.Sheets[
-            workbook.SheetNames[0]
-            ],
-            { range: 2 }
-        );
+    const jsonData = XLSX.utils.sheet_to_json(
+        workbook.Sheets[workbook.SheetNames[0]],
+        { range: 2 }
+    );
 
     const partyMap = {};
 
     jsonData.forEach(r => {
 
-        const partyId =
-            String(r["Party ID"]).trim();
+        const partyId = String(r["Party ID"]).trim();
 
         if (!partyId) return;
 
@@ -375,88 +395,97 @@ async function reconcileAndProcess() {
     // =====================================================
     // PARTY LOOP
     // =====================================================
-    for (const [partyId, rows]
-        of Object.entries(partyMap)) {
+
+    for (const [partyId, rows] of Object.entries(partyMap)) {
 
         log("PROCESS", partyId);
 
         const bookingIds =
-            rows.map(r =>
-                r["Authorization Reference"]
-            );
+            rows.map(r => r["Authorization Reference"]);
 
         const bookingMap =
-            await fetchBookingsBulk(
-                bookingIds
-            );
+            await fetchBookingsBulk(bookingIds);
 
         const dbFaultyRows =
             rows.filter(r => {
 
                 const doc =
                     bookingMap.get(
-                        String(
-                            r["Authorization Reference"]
-                        )
+                        String(r["Authorization Reference"])
                     );
 
-                return doc &&
-                    isFaulty(doc, partyId);
+                return doc && isFaulty(doc, partyId);
 
             });
 
         const todayIds =
-            dbFaultyRows.map(
-                r => r["Authorization Reference"]
-            );
+            dbFaultyRows
+                .filter(r =>
+                    ObjectId.isValid(r["Authorization Reference"])
+                )
+                .map(r =>
+                    new ObjectId(r["Authorization Reference"])
+                );
 
-        // UPDATE STILL_EXIST
+        // =============================================
+        // STILL EXIST LOGIC
+        // =============================================
+
         await faultyCollection.updateMany(
             { partyId },
             {
                 $set: {
                     still_exist: false,
-                    still_exist_timestamp:
-                        new Date()
+                    still_exist_timestamp: new Date()
                 }
             }
         );
 
         await faultyCollection.updateMany(
             {
-                bookingId:
-                    { $in: todayIds }
+                partyId,
+                bookingId: { $in: todayIds }
             },
             {
                 $set: {
                     still_exist: true,
-                    still_exist_timestamp:
-                        new Date()
+                    still_exist_timestamp: new Date()
                 }
             }
         );
 
-        // CHECK NEW IDS
-        const existing =
-            await faultyCollection
-                .find({
-                    bookingId:
-                        { $in: todayIds }
-                })
-                .toArray();
+        const existingDocs =
+            await faultyCollection.find({
+                partyId,
+                bookingId: { $in: todayIds }
+            }).toArray();
 
-        const existingIds =
-            existing.map(
-                d => d.bookingId
-            );
+        const existingMap = new Map();
+
+        existingDocs.forEach(d =>
+            existingMap.set(String(d.bookingId), d)
+        );
+
+        // =============================================
+        // DETECT NEW BOOKINGS
+        // =============================================
 
         const newRows =
-            dbFaultyRows.filter(
-                r =>
-                    !existingIds.includes(
-                        r["Authorization Reference"]
-                    )
-            );
+            dbFaultyRows.filter(r => {
+
+                const id =
+                    r["Authorization Reference"];
+
+                if (!ObjectId.isValid(id))
+                    return false;
+
+                return !existingMap.has(String(id));
+
+            });
+
+        // =============================================
+        // SEND NOTIFICATION
+        // =============================================
 
         if (newRows.length) {
 
@@ -466,13 +495,8 @@ async function reconcileAndProcess() {
             const info =
                 await transporter.sendMail({
 
-                    to:
-                        PARTY_CONFIG[partyId]
-                            .emails.join(","),
-
-                    cc:
-                        PARTY_CONFIG[partyId]
-                            .cc?.join(","),
+                    to: PARTY_CONFIG[partyId].emails.join(","),
+                    cc: PARTY_CONFIG[partyId].cc?.join(","),
 
                     subject:
                         `[AUTO-Notification] Faulty Sessions - ${partyId} - ${todayFolder}`,
@@ -486,8 +510,7 @@ async function reconcileAndProcess() {
                         }),
 
                     attachments: [{
-                        filename:
-                            `${partyId}_Faulty.xlsx`,
+                        filename: `${partyId}_Faulty.xlsx`,
                         content: buffer
                     }]
                 });
@@ -501,124 +524,207 @@ async function reconcileAndProcess() {
 
                 return {
 
-                    // =========================
-                    // IDENTIFIERS
-                    // =========================
                     bookingId:
                         new ObjectId(r["Authorization Reference"]),
 
+                    // ✅ from chargerbookings collection
+                    tenant_id:
+                        booking?.tenant
+                            ? new ObjectId(booking.tenant)
+                            : null,
+
+                    // ✅ charger id from booking document
                     charger_station_id:
-                        ObjectId.isValid(r["Charger Station ID"])
-                            ? new ObjectId(r["Charger Station ID"])
+                        booking?.charger
+                            ? new ObjectId(booking.charger)
                             : null,
 
+                    // ✅ vehicle id from booking document
                     vehicle_id:
-                        ObjectId.isValid(r["Vehicle ID"])
-                            ? new ObjectId(r["Vehicle ID"])
+                        booking?.vehicle
+                            ? new ObjectId(booking.vehicle)
                             : null,
 
-                    // =========================
-                    // BASIC SESSION DATA
-                    // =========================
                     partyId,
-                    partner_name: r["Partner Name"],
 
                     station_name: r["Station Name"],
                     city: r["City"],
                     state: r["State"],
 
                     connector_id: Number(r["Connector ID"]),
+                    energy_consumed: Number(r["Energy Consumed"]),
 
-                    energy_consumed:
-                        Number(r["Energy Consumed"]),
-
-                    payment_status:
-                        r["Payment Status"],
-
-                    // =========================
-                    // FAULTY REASONS ARRAY
-                    // =========================
                     faulty_reasons:
                         r["Faulty Reasons"]
                             ? [r["Faulty Reasons"]]
                             : [],
 
-                    cdr_id: r["CDR ID"],
+                    invoice_id: booking?.invoice || null,
 
-                    ocpi_session_id:
-                        r["OCPI Session ID"],
+                    mail_history: [{
+                        type: "Notification",
+                        timestamp: new Date(),
+                        thread_id: info.messageId
+                    }],
 
-                    // =========================
-                    // USER
-                    // =========================
-                    user_phone:
-                        r["User Phone"] || null,
+                    still_exist: true,
+                    still_exist_timestamp: new Date(),
+                    created_at: new Date()
+                };
 
-                    // =========================
-                    // BOOKING TIMES
-                    // =========================
-                    scheduled_time:
-                        r["Scheduled Time"]
-                            ? new Date(r["Scheduled Time"])
-                            : null,
+            });
+            const ops =
+                docs.map(doc => ({
+                    updateOne: {
+                        filter: { bookingId: doc.bookingId },
+                        update: { $setOnInsert: doc },
+                        upsert: true
+                    }
+                }));
 
-                    start_time:
-                        r["Start Time"]
-                            ? new Date(r["Start Time"])
-                            : null,
+            await faultyCollection.bulkWrite(ops);
 
-                    end_time:
-                        r["End Time"]
-                            ? new Date(r["End Time"])
-                            : null,
+            log("MAIL", `Notification ${partyId}`);
+        }
 
-                    // =========================
-                    // SOC
-                    // =========================
-                    start_soc:
-                        Number(r["Start SoC"]) || 0,
+        // =============================================
+        // GROUPED REMINDER PROCESSING
+        // =============================================
 
-                    stop_soc:
-                        Number(r["Stop SoC"]) || 0,
+        const reminder1Rows = [];
+        const finalReminderRows = [];
+        const reminder1Docs = [];
+        const finalReminderDocs = [];
 
-                    // =========================
-                    // INVOICE
-                    // =========================
-                    invoice_id:
-                        booking?.invoice || null,
+        for (const row of dbFaultyRows) {
 
-                    // =========================
-                    // MAIL HISTORY ARRAY
-                    // =========================
-                    mail_history: [
-                        {
-                            type: "Notification",
+            const id =
+                String(row["Authorization Reference"]);
+
+            const dbDoc =
+                existingMap.get(id);
+
+            if (!dbDoc) continue;
+            if (!dbDoc.still_exist) continue;
+
+            const lastMail =
+                dbDoc.mail_history[
+                dbDoc.mail_history.length - 1
+                ];
+
+            const diff =
+                now - new Date(lastMail.timestamp);
+
+            if (
+                lastMail.type === "Notification" &&
+                diff > REMINDER_DELAY
+            ) {
+
+                reminder1Rows.push(row);
+                reminder1Docs.push(dbDoc);
+
+            }
+
+            else if (
+                lastMail.type === "Reminder1" &&
+                diff > FINAL_DELAY
+            ) {
+
+                finalReminderRows.push(row);
+                finalReminderDocs.push(dbDoc);
+
+            }
+
+        }
+
+        // SEND REMINDER 1
+        if (reminder1Rows.length) {
+
+            const buffer =
+                createMailBuffer(reminder1Rows);
+
+            const info =
+                await transporter.sendMail({
+
+                    to: PARTY_CONFIG[partyId].emails.join(","),
+                    cc: PARTY_CONFIG[partyId].cc?.join(","),
+
+                    subject:
+                        `[AUTO-Reminder1] Faulty Sessions - ${partyId} - ${todayFolder}`,
+
+                    text:
+                        buildMailText({
+                            type: "Reminder1",
+                            partyId,
+                            batch: todayFolder,
+                            count: reminder1Rows.length
+                        }),
+
+                    attachments: [{
+                        filename: `${partyId}_Faulty.xlsx`,
+                        content: buffer
+                    }]
+                });
+
+            await faultyCollection.updateMany(
+                { _id: { $in: reminder1Docs.map(d => d._id) } },
+                {
+                    $push: {
+                        mail_history: {
+                            type: "Reminder1",
                             timestamp: new Date(),
                             thread_id: info.messageId
                         }
-                    ],
+                    }
+                }
+            );
 
-                    // =========================
-                    // AUTOMATION TRACKING
-                    // =========================
-                    batch_date:
-                        new Date(todayFolder),
+            log("MAIL", `Reminder1 ${partyId}`);
+        }
 
-                    still_exist: true,
+        // SEND FINAL REMINDER
+        if (finalReminderRows.length) {
 
-                    still_exist_timestamp:
-                        new Date(),
+            const buffer =
+                createMailBuffer(finalReminderRows);
 
-                    created_at:
-                        new Date()
-                };
-            });
+            const info =
+                await transporter.sendMail({
 
-            await faultyCollection
-                .insertMany(docs);
+                    to: PARTY_CONFIG[partyId].emails.join(","),
+                    cc: PARTY_CONFIG[partyId].cc?.join(","),
 
-            log("MAIL",
-                `Notification ${partyId}`);
+                    subject:
+                        `[AUTO-FinalReminder] Faulty Sessions - ${partyId} - ${todayFolder}`,
+
+                    text:
+                        buildMailText({
+                            type: "FinalReminder",
+                            partyId,
+                            batch: todayFolder,
+                            count: finalReminderRows.length
+                        }),
+
+                    attachments: [{
+                        filename: `${partyId}_Faulty.xlsx`,
+                        content: buffer
+                    }]
+                });
+
+            await faultyCollection.updateMany(
+                { _id: { $in: finalReminderDocs.map(d => d._id) } },
+                {
+                    $push: {
+                        mail_history: {
+                            type: "FinalReminder",
+                            timestamp: new Date(),
+                            thread_id: info.messageId
+                        }
+                    }
+                }
+            );
+
+            log("MAIL", `FinalReminder ${partyId}`);
         }
 
     }

@@ -364,11 +364,17 @@ function isFaulty(doc, partyId) {
 // =====================================================
 // CORE LOGIC
 // =====================================================
+function normalizeToMinute(date) {
+    const d = new Date(date);
+    d.setSeconds(0);
+    d.setMilliseconds(0);
+    return d;
+}
 async function reconcileAndProcess() {
 
     const REMINDER_DELAY = 24 * 60 * 60 * 1000;
     const FINAL_DELAY = 24 * 60 * 60 * 1000;
-    const now = new Date();
+    const now = normalizeToMinute(normalizeToMinute(new Date()));
 
     const workbook = XLSX.readFile(excelPath);
 
@@ -436,7 +442,7 @@ async function reconcileAndProcess() {
             {
                 $set: {
                     still_exist: false,
-                    still_exist_timestamp: new Date()
+                    still_exist_timestamp: normalizeToMinute(normalizeToMinute(new Date()))
                 }
             }
         );
@@ -449,7 +455,7 @@ async function reconcileAndProcess() {
             {
                 $set: {
                     still_exist: true,
-                    still_exist_timestamp: new Date()
+                    still_exist_timestamp: normalizeToMinute(normalizeToMinute(new Date()))
                 }
             }
         );
@@ -563,13 +569,13 @@ async function reconcileAndProcess() {
 
                     mail_history: [{
                         type: "Notification",
-                        timestamp: new Date(),
+                        timestamp: normalizeToMinute(new Date()),
                         thread_id: info.messageId
                     }],
 
                     still_exist: true,
-                    still_exist_timestamp: new Date(),
-                    created_at: new Date()
+                    still_exist_timestamp: normalizeToMinute(new Date()),
+                    created_at: normalizeToMinute(new Date())
                 };
 
             });
@@ -672,7 +678,7 @@ async function reconcileAndProcess() {
                     $push: {
                         mail_history: {
                             type: "Reminder1",
-                            timestamp: new Date(),
+                            timestamp: normalizeToMinute(new Date()),
                             thread_id: info.messageId
                         }
                     }
@@ -717,7 +723,7 @@ async function reconcileAndProcess() {
                     $push: {
                         mail_history: {
                             type: "FinalReminder",
-                            timestamp: new Date(),
+                            timestamp: normalizeToMinute(new Date()),
                             thread_id: info.messageId
                         }
                     }
